@@ -13,6 +13,7 @@ A lightweight, portable PDF editor desktop app with:
 - OCR current page
 - OCR entire document and export as `.txt`
 - Insert text on a page by entering text and clicking where to place it
+- Undo last text insertion (Ctrl+Z or Undo button)
 - Save edited PDF to a new file
 
 ## Requirements
