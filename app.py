@@ -25,6 +25,7 @@ class PDFEditorApp:
         self.page_scale_x = 1.0
         self.page_scale_y = 1.0
         self.insert_mode = False
+        self._undo_stack: list[dict] = []
 
         self._build_ui()
 
@@ -34,6 +35,7 @@ class PDFEditorApp:
 
         ctk.CTkButton(top, text="Open PDF", command=self.open_pdf).pack(side="left", padx=4)
         ctk.CTkButton(top, text="Save As", command=self.save_pdf).pack(side="left", padx=4)
+        ctk.CTkButton(top, text="Undo", command=self.undo_last).pack(side="left", padx=4)
         ctk.CTkButton(top, text="Previous", command=self.prev_page).pack(side="left", padx=4)
         ctk.CTkButton(top, text="Next", command=self.next_page).pack(side="left", padx=4)
         ctk.CTkButton(top, text="OCR Page", command=self.ocr_current_page).pack(side="left", padx=4)
@@ -73,6 +75,8 @@ class PDFEditorApp:
         self.status = ctk.CTkLabel(status_frame, text="Ready", anchor="w")
         self.status.pack(fill="x", padx=6)
 
+        self.root.bind("<Control-z>", lambda e: self.undo_last())
+
     def set_status(self, text: str) -> None:
         self.status.configure(text=text)
 
@@ -88,6 +92,7 @@ class PDFEditorApp:
             self.pdf_path = Path(path)
             self.page_index = 0
             self.insert_mode = False
+            self._undo_stack.clear()
             self.render_page()
             self.set_status(f"Opened: {self.pdf_path}")
         except Exception as exc:
@@ -181,6 +186,13 @@ class PDFEditorApp:
 
         try:
             page = self.doc[self.page_index]
+            snapshot = {
+                "page_index": self.page_index,
+                "contents": page.read_contents(),
+            }
+            self._undo_stack.append(snapshot)
+            if len(self._undo_stack) > 100:
+                self._undo_stack.pop(0)
             text_width = fitz.get_text_length(text, fontname="helv", fontsize=12)
             x_centered = x_pdf - text_width / 2
             y_centered = y_pdf + 6  # offset up by half font size
@@ -190,6 +202,25 @@ class PDFEditorApp:
             self.render_page()
         except Exception as exc:
             messagebox.showerror("Insert failed", f"Could not insert text:\n{exc}")
+
+    def undo_last(self) -> None:
+        if not self._undo_stack:
+            self.set_status("Nothing to undo.")
+            return
+        snapshot = self._undo_stack.pop()
+        try:
+            page = self.doc[snapshot["page_index"]]
+            page.clean_contents()
+            contents = page.get_contents()
+            if not contents:
+                self.set_status("Nothing to undo.")
+                return
+            xref = contents[0]
+            self.doc.update_stream(xref, snapshot["contents"])
+            self.render_page()
+            self.set_status("Undo successful.")
+        except Exception as exc:
+            messagebox.showerror("Undo failed", f"Could not undo:\n{exc}")
 
     def save_pdf(self) -> None:
         if not self.doc:
