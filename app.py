@@ -2,16 +2,16 @@ from __future__ import annotations
 
 import tkinter as tk
 from pathlib import Path
-from tkinter import filedialog, messagebox, ttk
-from tkinter.scrolledtext import ScrolledText
+from tkinter import filedialog, messagebox
 
+import customtkinter as ctk
 import fitz  # PyMuPDF
 import pytesseract
 from PIL import Image, ImageTk
 
 
 class PDFEditorApp:
-    def __init__(self, root: tk.Tk) -> None:
+    def __init__(self, root: ctk.CTk) -> None:
         self.root = root
         self.root.title("PDFedit - OCR + Basic Editing")
         self.root.geometry("1200x800")
@@ -29,47 +29,52 @@ class PDFEditorApp:
         self._build_ui()
 
     def _build_ui(self) -> None:
-        top = ttk.Frame(self.root, padding=8)
-        top.pack(fill=tk.X)
+        top = ctk.CTkFrame(self.root)
+        top.pack(fill="x", padx=8, pady=8)
 
-        ttk.Button(top, text="Open PDF", command=self.open_pdf).pack(side=tk.LEFT, padx=4)
-        ttk.Button(top, text="Save As", command=self.save_pdf).pack(side=tk.LEFT, padx=4)
-        ttk.Button(top, text="Previous", command=self.prev_page).pack(side=tk.LEFT, padx=4)
-        ttk.Button(top, text="Next", command=self.next_page).pack(side=tk.LEFT, padx=4)
-        ttk.Button(top, text="OCR Page", command=self.ocr_current_page).pack(side=tk.LEFT, padx=4)
-        ttk.Button(top, text="OCR All -> TXT", command=self.ocr_all_to_txt).pack(side=tk.LEFT, padx=4)
+        ctk.CTkButton(top, text="Open PDF", command=self.open_pdf).pack(side="left", padx=4)
+        ctk.CTkButton(top, text="Save As", command=self.save_pdf).pack(side="left", padx=4)
+        ctk.CTkButton(top, text="Previous", command=self.prev_page).pack(side="left", padx=4)
+        ctk.CTkButton(top, text="Next", command=self.next_page).pack(side="left", padx=4)
+        ctk.CTkButton(top, text="OCR Page", command=self.ocr_current_page).pack(side="left", padx=4)
+        ctk.CTkButton(top, text="OCR All -> TXT", command=self.ocr_all_to_txt).pack(side="left", padx=4)
 
-        self.page_label = ttk.Label(top, text="No file loaded")
-        self.page_label.pack(side=tk.RIGHT, padx=4)
+        self.page_label = ctk.CTkLabel(top, text="No file loaded")
+        self.page_label.pack(side="right", padx=4)
 
-        mid = ttk.Panedwindow(self.root, orient=tk.HORIZONTAL)
-        mid.pack(fill=tk.BOTH, expand=True)
+        mid = ctk.CTkFrame(self.root)
+        mid.pack(fill="both", expand=True)
+        mid.columnconfigure(0, weight=3)
+        mid.columnconfigure(1, weight=2)
+        mid.rowconfigure(0, weight=1)
 
-        left = ttk.Frame(mid, padding=8)
-        right = ttk.Frame(mid, padding=8)
-        mid.add(left, weight=3)
-        mid.add(right, weight=2)
+        left = ctk.CTkFrame(mid)
+        left.grid(row=0, column=0, sticky="nsew", padx=4, pady=4)
+        right = ctk.CTkFrame(mid)
+        right.grid(row=0, column=1, sticky="nsew", padx=4, pady=4)
 
         self.canvas = tk.Canvas(left, bg="#2b2b2b", highlightthickness=0)
-        self.canvas.pack(fill=tk.BOTH, expand=True)
+        self.canvas.pack(fill="both", expand=True)
         self.canvas.bind("<Button-1>", self.on_canvas_click)
 
-        ttk.Label(right, text="OCR / Page Text").pack(anchor=tk.W)
-        self.ocr_output = ScrolledText(right, wrap=tk.WORD, height=25)
-        self.ocr_output.pack(fill=tk.BOTH, expand=True, pady=(4, 8))
+        ctk.CTkLabel(right, text="OCR / Page Text").pack(anchor="w")
+        self.ocr_output = ctk.CTkTextbox(right, wrap="word", height=400)
+        self.ocr_output.pack(fill="both", expand=True, pady=(4, 8))
 
-        insert_row = ttk.Frame(right)
-        insert_row.pack(fill=tk.X, pady=2)
-        ttk.Label(insert_row, text="Insert text:").pack(side=tk.LEFT)
-        self.insert_text_entry = ttk.Entry(insert_row)
-        self.insert_text_entry.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=4)
-        ttk.Button(insert_row, text="Enable Insert Mode", command=self.enable_insert_mode).pack(side=tk.LEFT)
+        insert_row = ctk.CTkFrame(right)
+        insert_row.pack(fill="x", pady=2)
+        ctk.CTkLabel(insert_row, text="Insert text:").pack(side="left")
+        self.insert_text_entry = ctk.CTkEntry(insert_row)
+        self.insert_text_entry.pack(side="left", fill="x", expand=True, padx=4)
+        ctk.CTkButton(insert_row, text="Enable Insert Mode", command=self.enable_insert_mode).pack(side="left")
 
-        self.status = ttk.Label(self.root, text="Ready", relief=tk.SUNKEN, anchor=tk.W)
-        self.status.pack(fill=tk.X, side=tk.BOTTOM)
+        status_frame = ctk.CTkFrame(self.root, height=24)
+        status_frame.pack(fill="x", side="bottom")
+        self.status = ctk.CTkLabel(status_frame, text="Ready", anchor="w")
+        self.status.pack(fill="x", padx=6)
 
     def set_status(self, text: str) -> None:
-        self.status.config(text=text)
+        self.status.configure(text=text)
 
     def open_pdf(self) -> None:
         path = filedialog.askopenfilename(
@@ -105,7 +110,7 @@ class PDFEditorApp:
         rect = page.rect
         self.page_scale_x = pix.width / rect.width if rect.width else 1.0
         self.page_scale_y = pix.height / rect.height if rect.height else 1.0
-        self.page_label.config(text=f"Page {self.page_index + 1} / {len(self.doc)}")
+        self.page_label.configure(text=f"Page {self.page_index + 1} / {len(self.doc)}")
 
     def prev_page(self) -> None:
         if not self.doc or self.page_index <= 0:
@@ -124,8 +129,8 @@ class PDFEditorApp:
             return
         try:
             text = pytesseract.image_to_string(self.current_pil_image)
-            self.ocr_output.delete("1.0", tk.END)
-            self.ocr_output.insert(tk.END, text)
+            self.ocr_output.delete("1.0", "end")
+            self.ocr_output.insert("end", text)
             self.set_status("OCR complete for current page.")
         except Exception as exc:
             messagebox.showerror("OCR failed", f"OCR failed:\n{exc}")
@@ -176,7 +181,10 @@ class PDFEditorApp:
 
         try:
             page = self.doc[self.page_index]
-            page.insert_text((x_pdf, y_pdf), text, fontsize=12, color=(0, 0, 0))
+            text_width = fitz.get_text_length(text, fontname="helv", fontsize=12)
+            x_centered = x_pdf - text_width / 2
+            y_centered = y_pdf + 6  # offset up by half font size
+            page.insert_text((x_centered, y_centered), text, fontsize=12, color=(0, 0, 0))
             self.insert_mode = False
             self.set_status("Text inserted. Use Save As to write changes.")
             self.render_page()
@@ -206,7 +214,9 @@ class PDFEditorApp:
 
 
 def main() -> None:
-    root = tk.Tk()
+    ctk.set_appearance_mode("dark")
+    ctk.set_default_color_theme("blue")
+    root = ctk.CTk()
     app = PDFEditorApp(root)
     root.mainloop()
 
