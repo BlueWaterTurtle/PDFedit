@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 import tkinter as tk
 from pathlib import Path
 from tkinter import filedialog, messagebox
@@ -205,7 +206,7 @@ class PDFEditorApp:
             if event.state & 0x0001 and self.selected_block:
                 self._move_selected(x_pdf, y_pdf)
             else:
-                self._hit_test_text_blocks(x_pdf, y_pdf)
+                self._select_element_at(x_pdf, y_pdf)
             return
 
         if not self.insert_mode:
@@ -235,7 +236,9 @@ class PDFEditorApp:
         if self.select_mode:
             self.insert_mode = False
             self.select_mode_btn.configure(fg_color="#2CC985")
-            self.set_status("Select mode enabled: click a text block to select it. Shift+click to move selected.")
+            self.set_status(
+                "Select mode: click text spans, drawings, or images to select. Shift+click to move selected text."
+            )
         else:
             self.selected_block = None
             self.select_mode_btn.configure(fg_color=["#3B8ED0", "#1F6AA5"])
@@ -244,6 +247,7 @@ class PDFEditorApp:
 
     def _push_snapshot(self) -> None:
         page = self.doc[self.page_index]
+        page.clean_contents()
         snapshot = {
             "page_index": self.page_index,
             "contents": page.read_contents(),
@@ -252,48 +256,183 @@ class PDFEditorApp:
         if len(self._undo_stack) > 100:
             self._undo_stack.pop(0)
 
-    def _hit_test_text_blocks(self, x_pdf: float, y_pdf: float) -> None:
+    def _find_element_at(self, x_pdf: float, y_pdf: float) -> dict | None:
+        """Unified hit-testing: checks text spans, drawings, and images in priority order."""
         page = self.doc[self.page_index]
-        blocks = page.get_text("dict")["blocks"]
+        point = fitz.Point(x_pdf, y_pdf)
 
-        best_block = None
-        best_dist = float("inf")
-
+        # A. Text spans (including bullets and special characters)
+        blocks = page.get_text("rawdict", flags=fitz.TEXT_PRESERVE_WHITESPACE)["blocks"]
         for block in blocks:
-            if block.get("type") != 0:  # type 0 = text block
-                continue
-            x0, y0, x1, y1 = block["bbox"]
-            if x0 <= x_pdf <= x1 and y0 <= y_pdf <= y1:
-                best_block = block
-                best_dist = 0.0
-                break
-            cx = (x0 + x1) / 2
-            cy = (y0 + y1) / 2
-            dist = ((x_pdf - cx) ** 2 + (y_pdf - cy) ** 2) ** 0.5
-            if dist < best_dist:
-                best_dist = dist
-                best_block = block
+            for line in block.get("lines", []):
+                for span in line.get("spans", []):
+                    bbox = fitz.Rect(span["bbox"])
+                    if bbox.contains(point):
+                        return {
+                            "type": "text_span",
+                            "span": span,
+                            "bbox": tuple(span["bbox"]),
+                            "text": span.get("text", ""),
+                        }
 
-        if best_block is not None and best_dist < self._HIT_TEST_RADIUS:
-            text_content = ""
-            for line in best_block.get("lines", []):
-                line_text = " ".join(span.get("text", "") for span in line.get("spans", []))
-                if text_content:
-                    text_content += "\n"
-                text_content += line_text
+        # B. Vector drawings (lines, rectangles, filled shapes)
+        drawings = page.get_drawings()
+        for drawing in drawings:
+            dr = drawing["rect"]
+            inflated = fitz.Rect(dr.x0 - 2, dr.y0 - 2, dr.x1 + 2, dr.y1 + 2)
+            if inflated.contains(point):
+                return {
+                    "type": "drawing",
+                    "drawing": drawing,
+                    "bbox": tuple(dr),
+                    "text": "",
+                }
 
-            self.selected_block = {
-                "bbox": best_block["bbox"],
-                "text": text_content,
-            }
-            self.insert_text_entry.delete(0, "end")
-            self.insert_text_entry.insert(0, text_content)
+        # C. Embedded images
+        image_info = page.get_image_info(xrefs=True)
+        for img in image_info:
+            bbox = fitz.Rect(img["bbox"])
+            if bbox.contains(point):
+                return {
+                    "type": "image",
+                    "img": img,
+                    "bbox": tuple(img["bbox"]),
+                    "text": "",
+                }
+
+        # Fallback: nearest text span within HIT_TEST_RADIUS
+        best: dict | None = None
+        best_dist = float("inf")
+        for block in blocks:
+            for line in block.get("lines", []):
+                for span in line.get("spans", []):
+                    sbbox = fitz.Rect(span["bbox"])
+                    cx = (sbbox.x0 + sbbox.x1) / 2
+                    cy = (sbbox.y0 + sbbox.y1) / 2
+                    dist = ((x_pdf - cx) ** 2 + (y_pdf - cy) ** 2) ** 0.5
+                    if dist < best_dist:
+                        best_dist = dist
+                        best = {
+                            "type": "text_span",
+                            "span": span,
+                            "bbox": tuple(span["bbox"]),
+                            "text": span.get("text", ""),
+                        }
+
+        if best is not None and best_dist < self._HIT_TEST_RADIUS:
+            return best
+        return None
+
+    def _select_element_at(self, x_pdf: float, y_pdf: float) -> None:
+        """Find and select the element at the given PDF coordinates."""
+        elem = self._find_element_at(x_pdf, y_pdf)
+        if elem is not None:
+            self.selected_block = elem
+            if elem["type"] == "text_span":
+                self.insert_text_entry.delete(0, "end")
+                self.insert_text_entry.insert(0, elem["text"])
             self._draw_selection_highlight()
-            self.set_status(f"Selected: '{text_content[:60]}'")
+            type_labels = {"text_span": "text span", "drawing": "vector drawing", "image": "image"}
+            label = type_labels.get(elem["type"], elem["type"])
+            preview = elem.get("text", "")[:60]
+            suffix = f" — '{preview}'" if preview else ""
+            self.set_status(f"Selected: {label}{suffix}")
         else:
             self.selected_block = None
             self.render_page()
-            self.set_status("No text block found at click position.")
+            self.set_status("No element found at click position.")
+
+    def _remove_text_span_from_stream(self, page: fitz.Page, span: dict) -> bool:
+        """Surgically remove a text span's operators from the content stream.
+
+        Tries several common PDF encoding patterns (literal string, hex string)
+        for both Tj and TJ operators. Returns True if the stream was modified.
+        """
+        page.clean_contents()
+        contents = page.get_contents()
+        if not contents:
+            return False
+
+        xref = contents[0]
+        stream_bytes = self.doc.xref_stream(xref)
+        try:
+            stream = stream_bytes.decode("latin-1")
+        except Exception:
+            return False
+
+        span_text = span.get("text", "")
+        if not span_text:
+            return False
+        # Guard against pathologically long strings to keep regex fast
+        if len(span_text) > 500:
+            return False
+
+        original = stream
+
+        # Pattern 1: literal string (text) Tj
+        lit = re.escape(span_text)
+        stream = re.sub(r"\(" + lit + r"\)\s*Tj", "", stream)
+
+        # Pattern 2: simple TJ array [(text)] TJ
+        stream = re.sub(r"\[\(" + lit + r"\)\]\s*TJ", "", stream)
+
+        # Pattern 3: hex-encoded <hex> Tj / [<hex>] TJ
+        try:
+            hex_str = span_text.encode("latin-1", errors="replace").hex()
+            stream = re.sub(r"<" + hex_str + r">\s*Tj", "", stream, flags=re.IGNORECASE)
+            stream = re.sub(r"\[<" + hex_str + r">\]\s*TJ", "", stream, flags=re.IGNORECASE)
+        except Exception:
+            pass
+
+        if stream == original:
+            return False
+
+        # Remove empty BT...ET blocks that may have been left behind after operator removal.
+        # These are harmless no-op sequences in the PDF content model.
+        stream = re.sub(r"BT\s*ET", "", stream)
+
+        self.doc.update_stream(xref, stream.encode("latin-1"))
+        return True
+
+    def _remove_image_from_stream(self, page: fitz.Page, img_info: dict) -> bool:
+        """Remove an embedded image's placement operator (Do) from the content stream."""
+        img_name = img_info.get("name", "")
+        if not img_name:
+            return False
+
+        page.clean_contents()
+        contents = page.get_contents()
+        if not contents:
+            return False
+
+        xref = contents[0]
+        stream_bytes = self.doc.xref_stream(xref)
+        try:
+            stream = stream_bytes.decode("latin-1")
+        except Exception:
+            return False
+
+        original = stream
+        escaped_name = re.escape(img_name)
+
+        # Try to remove the typical image placement block: q <matrix> cm /ImgName Do Q
+        # Use [^qQ] to stay within a single, non-nested save/restore pair and apply
+        # length limits to prevent catastrophic backtracking on large streams.
+        stream = re.sub(
+            r"q(?:[^qQ]|\n){0,500}/" + escaped_name + r"\s+Do\s*(?:[^qQ]|\n){0,100}Q",
+            "",
+            stream,
+        )
+
+        if stream == original:
+            # Fallback: remove just the Do operator line
+            stream = re.sub(r"/" + escaped_name + r"\s+Do\s*\n?", "", stream)
+
+        if stream == original:
+            return False
+
+        self.doc.update_stream(xref, stream.encode("latin-1"))
+        return True
 
     def _draw_selection_highlight(self) -> None:
         if not self.selected_block:
@@ -303,12 +442,20 @@ class PDFEditorApp:
         cy0 = y0 * self.page_scale_y
         cx1 = x1 * self.page_scale_x
         cy1 = y1 * self.page_scale_y
-        self.canvas.create_rectangle(cx0, cy0, cx1, cy1, outline="cyan", width=2, tags="selection")
+        colour_map = {"text_span": "blue", "drawing": "green", "image": "orange"}
+        colour = colour_map.get(self.selected_block.get("type", "text_span"), "cyan")
+        self.canvas.create_rectangle(cx0, cy0, cx1, cy1, outline=colour, width=2, tags="selection")
 
     def apply_edit_to_selected(self) -> None:
         if not self.doc or not self.selected_block:
-            messagebox.showinfo("No selection", "Select a text block first using Select Mode.")
+            messagebox.showinfo("No selection", "Select a text span first using Select Mode.")
             return
+
+        elem_type = self.selected_block.get("type", "text_span")
+        if elem_type != "text_span":
+            messagebox.showinfo("Edit", "Editing is only supported for text spans. Select a text element to edit.")
+            return
+
         new_text = self.insert_text_entry.get().strip()
         if not new_text:
             messagebox.showinfo("No text", "Enter replacement text in the text entry field.")
@@ -316,10 +463,12 @@ class PDFEditorApp:
 
         page = self.doc[self.page_index]
         bbox = self.selected_block["bbox"]
+        span = self.selected_block.get("span", {})
         self._push_snapshot()
         try:
-            page.add_redact_annot(fitz.Rect(bbox))
-            page.apply_redactions()
+            # Non-destructively remove the old span from the content stream
+            self._remove_text_span_from_stream(page, span)
+            # Insert new text as a transparent overlay (no redaction)
             x0, y1 = bbox[0], bbox[3]
             page.insert_text((x0, y1), new_text, fontsize=12, color=(0, 0, 0))
             self.selected_block = None
@@ -332,27 +481,61 @@ class PDFEditorApp:
         if not self.doc or not self.selected_block:
             return
         page = self.doc[self.page_index]
-        bbox = self.selected_block["bbox"]
+        elem_type = self.selected_block.get("type", "text_span")
+
+        if elem_type == "drawing":
+            messagebox.showinfo(
+                "Drawing",
+                "Vector drawing deletion is not yet supported. Select a text span or image to delete.",
+            )
+            return
+
         self._push_snapshot()
         try:
-            page.add_redact_annot(fitz.Rect(bbox))
-            page.apply_redactions()
+            if elem_type == "text_span":
+                span = self.selected_block.get("span", {})
+                success = self._remove_text_span_from_stream(page, span)
+                if not success:
+                    self._undo_stack.pop()
+                    messagebox.showwarning(
+                        "Delete",
+                        "Could not surgically remove this text span. "
+                        "The text may use a complex or non-Latin encoding.",
+                    )
+                    return
+            elif elem_type == "image":
+                img_info = self.selected_block.get("img", {})
+                success = self._remove_image_from_stream(page, img_info)
+                if not success:
+                    self._undo_stack.pop()
+                    messagebox.showwarning("Delete", "Could not remove this image from the content stream.")
+                    return
+
             self.selected_block = None
             self.set_status("Element deleted. Use Save As to write changes.")
             self.render_page()
         except Exception as exc:
+            if self._undo_stack:
+                self._undo_stack.pop()
             messagebox.showerror("Delete failed", f"Could not delete element:\n{exc}")
 
     def _move_selected(self, x_pdf: float, y_pdf: float) -> None:
         if not self.doc or not self.selected_block:
             return
+
+        elem_type = self.selected_block.get("type", "text_span")
+        if elem_type != "text_span":
+            messagebox.showinfo("Move", "Moving is only supported for text spans.")
+            return
+
         page = self.doc[self.page_index]
-        bbox = self.selected_block["bbox"]
-        text = self.selected_block["text"]
+        span = self.selected_block.get("span", {})
+        text = self.selected_block.get("text", "")
         self._push_snapshot()
         try:
-            page.add_redact_annot(fitz.Rect(bbox))
-            page.apply_redactions()
+            # Non-destructively remove from old position
+            self._remove_text_span_from_stream(page, span)
+            # Re-insert at new position as transparent overlay (no redaction)
             text_width = fitz.get_text_length(text, fontname="helv", fontsize=12)
             x_centered = x_pdf - text_width / 2
             y_centered = y_pdf + 6
